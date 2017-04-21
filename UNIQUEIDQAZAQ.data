@@ -1125,7 +1125,7 @@ void main()
 	BoneTransform     += gBones[int(BoneIDs[2])] * Weights[2];
 	BoneTransform     += gBones[int(BoneIDs[3])] * Weights[3];
 	vec3 vP = vec3(BoneTransform*vec4(vPosition_m,1));
-	vec3 vN = vec3(BoneTransform*vec4(vNormal_m,1));
+	vec3 vN = normalize(vec3(BoneTransform*vec4(vNormal_m,0.0)));
 
 	// camera transform
 	gl_Position = PV * vec4(vP,1);
