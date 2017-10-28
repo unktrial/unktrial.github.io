@@ -144,6 +144,8 @@
         },
         canvas: (function() {
           var canvas = document.getElementById('canvas');
+	  canvas.setAttribute("tabindex", "0");
+	  canvas.addEventListener("mouseover", function(event) { canvas.focus(); }, false);
 
           // As a default initial behavior, pop up an alert when webgl context is lost. To make your
           // application robust, you may want to override this behavior before shipping!
