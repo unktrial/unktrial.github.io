@@ -2,4 +2,4 @@
 sudo chown nobody *
 git add --all
 git commit -m "commit"
-git push -u origin master
+git push -u origin master -f
