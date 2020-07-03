@@ -1,0 +1,721 @@
+precision mediump float;
+// input
+varying vec3 color;
+
+void main()
+{
+	gl_FragColor = vec4(color,0.5);
+}
+
+// input
+attribute vec3 vPosition_m;
+attribute vec3 vColor_m;
+
+// constants
+uniform mat4 PV;
+
+varying vec3 color;
+void main()
+{
+	gl_Position = PV * vec4(vPosition_m,1);
+	color=vColor_m;
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float resolutionx;
+uniform float resolutiony;
+
+vec4 b(vec2 coord){
+	vec3 tt= texture2D(hdrBuffer, coord).rgb;
+	tt=dot(tt, vec3(0.2126, 0.7152, 0.0722))>0.5 ? tt : vec3(0.0);
+	return(vec4(tt,1.0));
+}
+vec4 downsample(vec2 uv, vec2 halfpixel) {
+	vec4 sum = b(uv) * 4.0;
+	sum += b(uv + vec2( halfpixel.x,  halfpixel.y));
+	sum += b(uv + vec2(-halfpixel.x, -halfpixel.y));
+	sum += b(uv + vec2( halfpixel.x, -halfpixel.y));
+	sum += b(uv + vec2(-halfpixel.x,  halfpixel.y));
+	sum = sum / 8.0;
+	sum.w = 1.0;
+	return(sum);
+}
+void main() {
+	float y_offset=1.0/resolutiony;
+	float x_offset=1.0/resolutionx;
+	gl_FragColor = downsample(vec2(TexCoords.x,TexCoords.y),vec2(x_offset/2.0,y_offset/2.0));
+//	float a= TexCoords.x > 0.9 || TexCoords.y > 0.9 ? 1.0 : 0.0;
+//	gl_FragColor = vec4(vec2(TexCoords.x,TexCoords.y),a,1.0);
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float resolutionx;
+uniform float resolutiony;
+
+vec4 upsample(vec2 uv, vec2 halfpixel) {
+	vec4 sum = texture2D(hdrBuffer, uv + vec2(-halfpixel.x * 2.0, 0.0));
+	sum += texture2D(hdrBuffer, uv + vec2(-halfpixel.x, halfpixel.y)) * 2.0;
+	sum += texture2D(hdrBuffer, uv + vec2(0.0, halfpixel.y * 2.0));
+	sum += texture2D(hdrBuffer, uv + vec2(halfpixel.x, halfpixel.y)) * 2.0;
+	sum += texture2D(hdrBuffer, uv + vec2(halfpixel.x * 2.0, 0.0));
+	sum += texture2D(hdrBuffer, uv + vec2(halfpixel.x, -halfpixel.y)) * 2.0;
+	sum += texture2D(hdrBuffer, uv + vec2(0.0, -halfpixel.y * 2.0));
+	sum += texture2D(hdrBuffer, uv + vec2(-halfpixel.x, -halfpixel.y)) * 2.0;
+	sum = sum / 12.0;
+	sum.w = 1.0;
+	return(sum);
+}
+void main() {
+	float x_offset=1.0/resolutionx;
+	float y_offset=1.0/resolutiony;
+	vec4 result= upsample(TexCoords,vec2(x_offset/2.0,y_offset/2.0));
+	gl_FragColor = vec4(result.xyz,1.0);
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float resolutiony;
+
+vec3 b(vec2 coord){
+	vec3 tt= texture2D(hdrBuffer, coord).rgb;
+	return(dot(tt, vec3(0.2126, 0.7152, 0.0722))>1.0 ? tt : vec3(0.0));
+}
+void main() {             
+	float y_offset=1.0/resolutiony;
+	vec3 result= b(TexCoords);
+	gl_FragColor = vec4(result,1.0);
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float resolutionx;
+
+void main() {             
+	float x_offset=1.0/resolutionx;
+	float weight[5];
+	weight[0]=0.227027;
+	weight[1]=0.1945946;
+	weight[2]=0.1216216;
+	weight[3]=0.054054;
+	weight[4]=0.016216;
+	vec3 result= texture2D(hdrBuffer, TexCoords).xyz*weight[0];
+	for(int i = 1; i < 5; ++i){
+		result += texture2D(hdrBuffer, TexCoords + vec2(x_offset * float(i), 0.0)).rgb * weight[i];
+		result += texture2D(hdrBuffer, TexCoords - vec2(x_offset * float(i), 0.0)).rgb * weight[i];
+	}
+	gl_FragColor = vec4(result,1.0);
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform sampler2D thirdBuffer;
+uniform float exposure;
+uniform float alpha;
+uniform float resolutionx;
+uniform float resolutiony;
+
+#ifndef FXAA_REDUCE_MIN
+    #define FXAA_REDUCE_MIN   (1.0/ 128.0)
+#endif
+#ifndef FXAA_REDUCE_MUL
+    #define FXAA_REDUCE_MUL   (1.0 / 8.0)
+#endif
+#ifndef FXAA_SPAN_MAX
+    #define FXAA_SPAN_MAX     8.0
+#endif
+
+vec4 fxaa(sampler2D tex, vec2 fragCoord, vec2 resolution,
+            vec2 v_rgbNW, vec2 v_rgbNE, 
+            vec2 v_rgbSW, vec2 v_rgbSE, 
+            vec2 v_rgbM) {
+    vec4 color;
+    vec2 inverseVP = vec2(1.0 / resolution.x, 1.0 / resolution.y);
+    vec3 rgbNW = texture2D(tex, v_rgbNW).xyz;
+    vec3 rgbNE = texture2D(tex, v_rgbNE).xyz;
+    vec3 rgbSW = texture2D(tex, v_rgbSW).xyz;
+    vec3 rgbSE = texture2D(tex, v_rgbSE).xyz;
+    vec4 texColor = texture2D(tex, v_rgbM);
+    vec3 rgbM  = texColor.xyz;
+    vec3 luma = vec3(0.299, 0.587, 0.114);
+    float lumaNW = dot(rgbNW, luma);
+    float lumaNE = dot(rgbNE, luma);
+    float lumaSW = dot(rgbSW, luma);
+    float lumaSE = dot(rgbSE, luma);
+    float lumaM  = dot(rgbM,  luma);
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+    
+    vec2 dir;
+    dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * FXAA_REDUCE_MUL), FXAA_REDUCE_MIN);
+    
+    float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    dir = min(vec2(FXAA_SPAN_MAX, FXAA_SPAN_MAX),
+              max(vec2(-FXAA_SPAN_MAX, -FXAA_SPAN_MAX),
+              dir * rcpDirMin)) * inverseVP;
+    
+    vec3 rgbA = 0.5 * (
+        texture2D(tex, fragCoord * inverseVP + dir * (1.0 / 3.0 - 0.5)).xyz +
+        texture2D(tex, fragCoord * inverseVP + dir * (2.0 / 3.0 - 0.5)).xyz);
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (
+        texture2D(tex, fragCoord * inverseVP + dir * -0.5).xyz +
+        texture2D(tex, fragCoord * inverseVP + dir * 0.5).xyz);
+
+    float lumaB = dot(rgbB, luma);
+    if ((lumaB < lumaMin) || (lumaB > lumaMax))
+        color = vec4(rgbA, texColor.a);
+    else
+        color = vec4(rgbB, texColor.a);
+    return color;
+}
+
+void texcoords(vec2 fragCoord, vec2 resolution,
+			out vec2 v_rgbNW, out vec2 v_rgbNE,
+			out vec2 v_rgbSW, out vec2 v_rgbSE,
+			out vec2 v_rgbM) {
+	vec2 inverseVP = 1.0 / resolution.xy;
+	v_rgbNW = (fragCoord + vec2(-1.0, -1.0)) * inverseVP;
+	v_rgbNE = (fragCoord + vec2(1.0, -1.0)) * inverseVP;
+	v_rgbSW = (fragCoord + vec2(-1.0, 1.0)) * inverseVP;
+	v_rgbSE = (fragCoord + vec2(1.0, 1.0)) * inverseVP;
+	v_rgbM = vec2(fragCoord * inverseVP);
+}
+
+vec4 fxaa2(sampler2D tex, vec2 fragCoord, vec2 resolution) {
+	vec2 v_rgbNW;
+	vec2 v_rgbNE;
+	vec2 v_rgbSW;
+	vec2 v_rgbSE;
+	vec2 v_rgbM;
+
+	//compute the texture coords
+	texcoords(fragCoord, resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+	
+	//compute FXAA
+	return fxaa(tex, fragCoord, resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+//	return fxaa_test(tex, fragCoord, resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+}
+
+void main() {             
+	// fxaa
+	vec2 iResolution=vec2(resolutionx,resolutiony);
+	vec2 fragCoord = TexCoords * iResolution; 
+	vec4 fxout = fxaa2(hdrBuffer, fragCoord, iResolution);
+
+	float weight[5];
+	weight[0]=0.227027;
+	weight[1]=0.1945946;
+	weight[2]=0.1216216;
+	weight[3]=0.054054;
+	weight[4]=0.016216;
+	float y_offset=1.0/resolutiony;
+	vec3 re= texture2D(thirdBuffer, TexCoords).xyz*weight[0];
+	for(int i = 1; i < 5; ++i){
+		re+= texture2D(thirdBuffer, TexCoords + vec2(0.0, y_offset * float(i))).rgb * weight[i];
+		re+= texture2D(thirdBuffer, TexCoords - vec2(0.0, y_offset * float(i))).rgb * weight[i];
+	}
+
+	vec3 hdrColor = fxout.rgb+re;
+
+//	vec3 hdrColor = (texture2D(hdrBuffer, TexCoords).rgb+texture2D(thirdBuffer, TexCoords).rgb);
+//	vec3 hdrColor = (texture2D(hdrBuffer, TexCoords).rgb+re);
+
+	// hdr
+	const float gamma = 2.2;
+	vec3 result = vec3(1.0) - exp(-hdrColor * exposure);
+	result = pow(result, vec3(1.0 / gamma));
+	gl_FragColor = vec4(result, alpha);
+//	gl_FragColor =  vec4(hdrColor,1.0);
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float resolutiony;
+
+void main() {             
+	float weight[5]; weight[0]=0.227027; weight[1]=0.1945946; weight[2]=0.1216216; weight[3]=0.054054; weight[4]=0.016216;
+	float y_offset=1.0/resolutiony;
+	vec3 result= texture2D(hdrBuffer, TexCoords).xyz*weight[0];
+	for(int i = 1; i < 5; ++i){
+		result += texture2D(hdrBuffer, TexCoords + vec2(0.0, y_offset * float(i))).rgb * weight[i];
+		result += texture2D(hdrBuffer, TexCoords - vec2(0.0, y_offset * float(i))).rgb * weight[i];
+	}
+	gl_FragColor = vec4(result,1.0);
+}
+// input
+attribute vec3 position;
+attribute vec2 texcoords;
+// output
+varying vec2 TexCoords;
+
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+    TexCoords = texcoords;
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float exposure;
+uniform float alpha;
+uniform float resolutionx;
+uniform float resolutiony;
+
+#ifndef FXAA_REDUCE_MIN
+    #define FXAA_REDUCE_MIN   (1.0/ 128.0)
+#endif
+#ifndef FXAA_REDUCE_MUL
+    #define FXAA_REDUCE_MUL   (1.0 / 8.0)
+#endif
+#ifndef FXAA_SPAN_MAX
+    #define FXAA_SPAN_MAX     8.0
+#endif
+
+vec4 fxaa(sampler2D tex, vec2 fragCoord, vec2 resolution,
+            vec2 v_rgbNW, vec2 v_rgbNE, 
+            vec2 v_rgbSW, vec2 v_rgbSE, 
+            vec2 v_rgbM) {
+    vec4 color;
+    vec2 inverseVP = vec2(1.0 / resolution.x, 1.0 / resolution.y);
+    vec3 rgbNW = texture2D(tex, v_rgbNW).xyz;
+    vec3 rgbNE = texture2D(tex, v_rgbNE).xyz;
+    vec3 rgbSW = texture2D(tex, v_rgbSW).xyz;
+    vec3 rgbSE = texture2D(tex, v_rgbSE).xyz;
+    vec4 texColor = texture2D(tex, v_rgbM);
+    vec3 rgbM  = texColor.xyz;
+    vec3 luma = vec3(0.299, 0.587, 0.114);
+    float lumaNW = dot(rgbNW, luma);
+    float lumaNE = dot(rgbNE, luma);
+    float lumaSW = dot(rgbSW, luma);
+    float lumaSE = dot(rgbSE, luma);
+    float lumaM  = dot(rgbM,  luma);
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+    
+    vec2 dir;
+    dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * FXAA_REDUCE_MUL), FXAA_REDUCE_MIN);
+    
+    float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    dir = min(vec2(FXAA_SPAN_MAX, FXAA_SPAN_MAX),
+              max(vec2(-FXAA_SPAN_MAX, -FXAA_SPAN_MAX),
+              dir * rcpDirMin)) * inverseVP;
+    
+    vec3 rgbA = 0.5 * (
+        texture2D(tex, fragCoord * inverseVP + dir * (1.0 / 3.0 - 0.5)).xyz +
+        texture2D(tex, fragCoord * inverseVP + dir * (2.0 / 3.0 - 0.5)).xyz);
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (
+        texture2D(tex, fragCoord * inverseVP + dir * -0.5).xyz +
+        texture2D(tex, fragCoord * inverseVP + dir * 0.5).xyz);
+
+    float lumaB = dot(rgbB, luma);
+    if ((lumaB < lumaMin) || (lumaB > lumaMax))
+        color = vec4(rgbA, texColor.a);
+    else
+        color = vec4(rgbB, texColor.a);
+    return color;
+}
+
+void texcoords(vec2 fragCoord, vec2 resolution,
+			out vec2 v_rgbNW, out vec2 v_rgbNE,
+			out vec2 v_rgbSW, out vec2 v_rgbSE,
+			out vec2 v_rgbM) {
+	vec2 inverseVP = 1.0 / resolution.xy;
+	v_rgbNW = (fragCoord + vec2(-1.0, -1.0)) * inverseVP;
+	v_rgbNE = (fragCoord + vec2(1.0, -1.0)) * inverseVP;
+	v_rgbSW = (fragCoord + vec2(-1.0, 1.0)) * inverseVP;
+	v_rgbSE = (fragCoord + vec2(1.0, 1.0)) * inverseVP;
+	v_rgbM = vec2(fragCoord * inverseVP);
+}
+
+vec4 fxaa2(sampler2D tex, vec2 fragCoord, vec2 resolution) {
+	vec2 v_rgbNW;
+	vec2 v_rgbNE;
+	vec2 v_rgbSW;
+	vec2 v_rgbSE;
+	vec2 v_rgbM;
+
+	//compute the texture coords
+	texcoords(fragCoord, resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+	
+	//compute FXAA
+	return fxaa(tex, fragCoord, resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+}
+
+void main() {             
+	// fxaa
+	vec2 iResolution=vec2(resolutionx,resolutiony);
+	vec2 fragCoord = TexCoords * iResolution; 
+	vec4 fxout = fxaa2(hdrBuffer, fragCoord, iResolution);
+
+	vec3 hdrColor = fxout.rgb;
+
+	// hdr
+	const float gamma = 2.2;
+	vec3 result = vec3(1.0) - exp(-hdrColor * exposure);
+	result = pow(result, vec3(1.0 / gamma));
+	gl_FragColor = vec4(result, alpha);
+}
+precision mediump float;
+// in
+varying vec2 TexCoords;
+uniform sampler2D hdrBuffer;
+uniform float resolutionx;
+uniform float resolutiony;
+
+vec4 downsample(vec2 uv, vec2 halfpixel) {
+	vec4 sum = texture2D(hdrBuffer, uv) * 4.0;
+	sum += texture2D(hdrBuffer, uv + vec2( halfpixel.x,  halfpixel.y));
+	sum += texture2D(hdrBuffer, uv + vec2(-halfpixel.x, -halfpixel.y));
+	sum += texture2D(hdrBuffer, uv + vec2( halfpixel.x, -halfpixel.y));
+	sum += texture2D(hdrBuffer, uv + vec2(-halfpixel.x,  halfpixel.y));
+	sum = sum / 8.0;
+	sum.w = 1.0;
+	return(sum);
+}
+void main() {
+	float y_offset=1.0/resolutiony;
+	float x_offset=1.0/resolutionx;
+	gl_FragColor = downsample(vec2(TexCoords.x,TexCoords.y),vec2(x_offset/2.0,y_offset/2.0));
+}
+precision mediump float;
+// input
+varying vec3 Position_worldspace;
+uniform float time;
+uniform vec3 color;
+
+void main()
+{
+	gl_FragColor.rgb=vec3(0.0,0.0,0.0);
+}
+
+precision mediump float;
+// input
+varying vec3 Position_worldspace;
+uniform float time;
+uniform vec3 color;
+
+void main()
+{
+	vec3 d = normalize(Position_worldspace);
+
+	float red = (sin(d[0]+time)+1.0)/2.0;
+
+	gl_FragColor=vec4(1.0);
+	gl_FragColor.r = red*color.r;
+	gl_FragColor.g = red*color.g;
+	gl_FragColor.b = 1.0*color.b;
+}
+
+// input
+attribute vec3 vPosition_m;
+// constants
+uniform mat4 PV;
+// output
+varying vec3 Position_worldspace;
+
+void main()
+{
+	vec4 pos = PV * vec4(vPosition_m,1);
+	gl_Position = pos.xyww;
+	Position_worldspace = vPosition_m;
+}
+precision mediump float;
+// input
+varying vec3 Position_worldspace;
+uniform float time;
+uniform vec3 color;
+
+vec4 mod289(vec4 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0; }
+
+float mod289(float x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0; }
+
+vec4 permute(vec4 x) {
+     return mod289(((x*34.0)+1.0)*x);
+}
+
+float permute(float x) {
+     return mod289(((x*34.0)+1.0)*x);
+}
+
+vec4 taylorInvSqrt(vec4 r)
+{
+  return 1.79284291400159 - 0.85373472095314 * r;
+}
+
+float taylorInvSqrt(float r)
+{
+  return 1.79284291400159 - 0.85373472095314 * r;
+}
+
+vec4 grad4(float j, vec4 ip)
+  {
+  const vec4 ones = vec4(1.0, 1.0, 1.0, -1.0);
+  vec4 p,s;
+
+  p.xyz = floor( fract (vec3(j) * ip.xyz) * 7.0) * ip.z - 1.0;
+  p.w = 1.5 - dot(abs(p.xyz), ones.xyz);
+  s = vec4(lessThan(p, vec4(0.0)));
+  p.xyz = p.xyz + (s.xyz*2.0 - 1.0) * s.www; 
+
+  return p;
+  }
+						
+// (sqrt(5) - 1)/4 = F4, used once below
+#define F4 0.309016994374947451
+
+float snoise(vec4 v)
+  {
+  const vec4  C = vec4( 0.138196601125011,  // (5 - sqrt(5))/20  G4
+                        0.276393202250021,  // 2 * G4
+                        0.414589803375032,  // 3 * G4
+                       -0.447213595499958); // -1 + 4 * G4
+
+// First corner
+  vec4 i  = floor(v + dot(v, vec4(F4)) );
+  vec4 x0 = v -   i + dot(i, C.xxxx);
+
+// Other corners
+
+// Rank sorting originally contributed by Bill Licea-Kane, AMD (formerly ATI)
+  vec4 i0;
+  vec3 isX = step( x0.yzw, x0.xxx );
+  vec3 isYZ = step( x0.zww, x0.yyz );
+//  i0.x = dot( isX, vec3( 1.0 ) );
+  i0.x = isX.x + isX.y + isX.z;
+  i0.yzw = 1.0 - isX;
+//  i0.y += dot( isYZ.xy, vec2( 1.0 ) );
+  i0.y += isYZ.x + isYZ.y;
+  i0.zw += 1.0 - isYZ.xy;
+  i0.z += isYZ.z;
+  i0.w += 1.0 - isYZ.z;
+
+  // i0 now contains the unique values 0,1,2,3 in each channel
+  vec4 i3 = clamp( i0, 0.0, 1.0 );
+  vec4 i2 = clamp( i0-1.0, 0.0, 1.0 );
+  vec4 i1 = clamp( i0-2.0, 0.0, 1.0 );
+
+  //  x0 = x0 - 0.0 + 0.0 * C.xxxx
+  //  x1 = x0 - i1  + 1.0 * C.xxxx
+  //  x2 = x0 - i2  + 2.0 * C.xxxx
+  //  x3 = x0 - i3  + 3.0 * C.xxxx
+  //  x4 = x0 - 1.0 + 4.0 * C.xxxx
+  vec4 x1 = x0 - i1 + C.xxxx;
+  vec4 x2 = x0 - i2 + C.yyyy;
+  vec4 x3 = x0 - i3 + C.zzzz;
+  vec4 x4 = x0 + C.wwww;
+
+// Permutations
+  i = mod289(i); 
+  float j0 = permute( permute( permute( permute(i.w) + i.z) + i.y) + i.x);
+  vec4 j1 = permute( permute( permute( permute (
+             i.w + vec4(i1.w, i2.w, i3.w, 1.0 ))
+           + i.z + vec4(i1.z, i2.z, i3.z, 1.0 ))
+           + i.y + vec4(i1.y, i2.y, i3.y, 1.0 ))
+           + i.x + vec4(i1.x, i2.x, i3.x, 1.0 ));
+
+// Gradients: 7x7x6 points over a cube, mapped onto a 4-cross polytope
+// 7*7*6 = 294, which is close to the ring size 17*17 = 289.
+  vec4 ip = vec4(1.0/294.0, 1.0/49.0, 1.0/7.0, 0.0) ;
+
+  vec4 p0 = grad4(j0,   ip);
+  vec4 p1 = grad4(j1.x, ip);
+  vec4 p2 = grad4(j1.y, ip);
+  vec4 p3 = grad4(j1.z, ip);
+  vec4 p4 = grad4(j1.w, ip);
+
+// Normalise gradients
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+  p0 *= norm.x;
+  p1 *= norm.y;
+  p2 *= norm.z;
+  p3 *= norm.w;
+  p4 *= taylorInvSqrt(dot(p4,p4));
+
+// Mix contributions from the five corners
+  vec3 m0 = max(0.6 - vec3(dot(x0,x0), dot(x1,x1), dot(x2,x2)), 0.0);
+  vec2 m1 = max(0.6 - vec2(dot(x3,x3), dot(x4,x4)            ), 0.0);
+  m0 = m0 * m0;
+  m1 = m1 * m1;
+  return 49.0 * ( dot(m0*m0, vec3( dot( p0, x0 ), dot( p1, x1 ), dot( p2, x2 )))
+               + dot(m1*m1, vec2( dot( p3, x3 ), dot( p4, x4 ) ) ) ) ;
+
+  }
+
+
+void main()
+{
+	vec3 d = normalize(Position_worldspace);
+
+	float n1 = 1.0-snoise(vec4(d.x+2.0*time,d.y*2.5,d.z,time*0.5));
+	float n2 = snoise(vec4(d,time)*vec4(8.0,11.0,8.0,2.0));
+	float red = n1-n1*n2/5.0;
+
+	gl_FragColor=vec4(1.0);
+	gl_FragColor.r = red*color.r;
+	gl_FragColor.g = red*color.g;
+	gl_FragColor.b = 1.0*color.b;
+}
+
+precision mediump float;
+#extension GL_OES_standard_derivatives : enable
+// input
+varying vec3 Position_worldspace;
+//varying vec3 Normal_worldspace;
+//varying vec4 ShadowCoord;
+varying float data;
+uniform vec3 CameraPosition_worldspace;
+//uniform float time;
+
+//uniform sampler2D shadowMap;
+struct spotLight {
+	vec3 position;
+	vec3 direction;
+	float cutOff;
+	float outerCutOff;
+
+	float constant;
+	float linear;
+	float quadratic;
+
+	vec3 ambient;
+	vec3 diffuse;
+	vec3 specular;
+};
+const int MAX_LIGHTS = 2;
+uniform spotLight _light[MAX_LIGHTS];
+
+//vec3 CalcLight(spotLight light, vec3 ambient_w, vec3 diffuse_w, vec3 specular_w, float shininess_w, vec3 Norm_w, vec3 pos_w, vec3 cam_w){
+//	// ambient
+//	vec3 ambient = light.ambient * ambient_w;
+//	// diffuse
+//	vec3 norm = normalize(Norm_w);
+//	vec3 lightDir = normalize(light.position - pos_w);
+//	float diff = max(dot(norm, lightDir), 0.0);
+////float ns=4.0;
+////diff=floor(diff*ns)/ns;
+//	vec3 diffuse = light.diffuse * (diff * diffuse_w);
+//	// Specular
+//	vec3 viewDir = normalize(cam_w - pos_w);
+//	vec3 halfwayDir = normalize(lightDir + viewDir);
+//	float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess_w);
+////spec=floor(spec*ns)/ns;
+//	vec3 specular = light.specular * (spec * specular_w);
+//	// attenuation
+//	float distance = length(cam_w - pos_w);
+//	float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance));
+//	// Spotlight intensity
+//	float theta = dot(lightDir, normalize(-light.direction));
+//	float epsilon = light.cutOff - light.outerCutOff;
+//	float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0);
+////intensity=floor(intensity*ns)/ns;
+////attenuation=floor(attenuation*ns)/ns;
+//	// shadow
+//	float shadow = 0.0;
+//	float bias = -0.0001;
+//	vec2 texelSize = 1.0 / vec2(2048.0,2048.0);
+//	for(int x = -1; x <= 1; ++x) {
+//	for(int y = -1; y <= 1; ++y) {
+//		vec2 xy=ShadowCoord.xy/ShadowCoord.w*0.5+0.5 + vec2(x, y) * texelSize;
+//		float z = texture2D(shadowMap, xy).r; 
+//		shadow += ShadowCoord.z/ShadowCoord.w > z ? 0.0 : 1.0;
+//	}}
+//	shadow /= 9.0;
+//	return (ambient + (diffuse + specular)* intensity)*attenuation;
+//}
+
+vec3 CalcLight_passive(spotLight light, vec3 ambient_w, vec3 diffuse_w, vec3 specular_w, float shininess_w, vec3 Norm_w, vec3 pos_w, vec3 cam_w){
+	// ambient
+	vec3 ambient = light.ambient * ambient_w;
+
+	// diffuse
+	vec3 norm = normalize(Norm_w);
+	vec3 lightDir = normalize(light.position - pos_w);
+	float diff = max(dot(norm, lightDir), 0.0);
+	vec3 diffuse = light.diffuse * (diff * diffuse_w);
+
+	// Specular
+	vec3 viewDir = normalize(cam_w - pos_w);
+	vec3 halfwayDir = normalize(lightDir + viewDir);
+	float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess_w);
+	vec3 specular = light.specular * (spec * specular_w);
+
+	// attenuation
+	float distance = length(cam_w - pos_w);
+	float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance));
+
+	// Spotlight intensity
+	float theta = dot(lightDir, normalize(-light.direction));
+	float epsilon = light.cutOff - light.outerCutOff;
+	float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0);
+
+	return (ambient + (diffuse + specular)*intensity)*attenuation;
+}
+void main() {
+	vec3 Pt = Position_worldspace;
+//	vec3 Nt = normalize(Normal_worldspace);
+	vec3 Nt = normalize(-1.0*cross(vec3(dFdy(Pt.x),dFdy(Pt.y),dFdy(Pt.z)), vec3(dFdx(Pt.x),dFdx(Pt.y),dFdx(Pt.z))));
+	vec3 Ct = CameraPosition_worldspace;
+	vec3 ambient = vec3(data+0.5);
+	vec3 diffuse = vec3(data+0.5);
+	vec3 specular = vec3(data+0.5);
+	float shininess = 1.0;
+	vec3 l1 =CalcLight_passive(_light[0], ambient, diffuse, specular,shininess, Nt, Pt, Ct);
+	     l1+=CalcLight_passive(_light[1], ambient, diffuse, specular,shininess, Nt, Pt, Ct);
+	gl_FragColor.rgb = l1;
+	gl_FragColor.a = 1.0;
+}
+
+// input
+attribute vec3 vPosition_m;
+//attribute vec3 vNormal_m;
+attribute float vData;
+// constants
+uniform mat4 PV;
+//uniform mat4 DepthBiasMVP;
+// output
+varying vec3 Position_worldspace;
+//varying vec3 Normal_worldspace;
+//varying vec4 ShadowCoord;
+varying float data;
+
+void main()
+{
+	gl_Position = PV * vec4(vPosition_m,1);
+	Position_worldspace = vPosition_m;
+//	Normal_worldspace = vNormal_m;
+//	ShadowCoord = DepthBiasMVP * vec4(vPosition_m,1.0);
+	data=vData;
+}
+b0VIM 7.4      ƒõ›^Ω-  êT  ming                                    ming-VirtualBox                         /media/sf_Volumes/WD_easystor/ming/test/example_emscripten/shaders/glsl/polyvox/f_polyvox_s.glsl                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             utf-8 3210    #"! U                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 tp           [                                   o                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      ad    î     [       Á  ∑  Æ  å  j  N  :    ¸  ˚  ‹  …  π  ®  ô  Ö  Ñ  s  d  R  Q  B  3  #       ‡  ﬂ  S  E    
+  Ë  ≤  É  q  U      ‰  ∞  m  Q      €
+  h
+  N
+  
+  ‹	  è	  i	  ?	  2	  	  	  ”  ±  è  D    ﬁ  ÿ  ∆  É    ~  Ï  ‡  µ  ¥  ®  à  T  '  Û  Ú  Â  ª  â  H         ◊  f  e  M    ﬂ  î  p  V  <  ,  w  v  u  t  s  r  q      Â  „  µ  p  T  4  ˝                                            //intensity=floor(intensity*ns)/ns; 	float intensity =//intensity=floor(intensity*ns)///intensity=floor(intensity*//intensity=floor(intensity*ns)/ns; 	float intensity = clamp((theta -//intensity=floor(intensity*n//intensity=floor(intensity*ns)/ns; 	float intensity = clamp((theta - light.outerCutOff) ///intensity=floo//intensity=floor(intensit//intensity=floor(intensit//intensity=floor(intensity*ns)/ns; 	float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0); 	float epsilon = light.cutOff - light.outerCutOff; 	float theta = dot(lightDir, normalize(-light.direction)); 	// Spotlight intensity  	float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance)); 	float distance = length(cam_w - pos_w); 	// attenuation  	vec3 specular = light.specular * (spec * specular_w); 	float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess_w); 	vec3 halfwayDir = normalize(lightDir + viewDir); 	vec3 viewDir = normalize(cam_w - pos_w); 	// Specular  	vec3 diffuse = light.diffuse * (diff * diffuse_w); 	float diff = max(dot(norm, lightDir), 0.0); 	vec3 lightDir = normalize(light.position - pos_w); 	vec3 norm = normalize(Norm_w); 	// diffuse  	vec3 ambient = light.ambient * ambient_w; 	// ambient vec3 CalcLight_passive(spotLight light, vec3 ambient_w, vec3 diffuse_w, vec3 specular_w, float shininess_w, vec3 Norm_w, vec3 pos_w, vec3 cam_w){  //} //	return (ambient + (diffuse + specular)* intensity)*attenuation; //	shadow /= 9.0; //	}} //		shadow += ShadowCoord.z/ShadowCoord.w > z ? 0.0 : 1.0; //		float z = texture2D(shadowMap, xy).r;  //		vec2 xy=ShadowCoord.xy/ShadowCoord.w*0.5+0.5 + vec2(x, y) * texelSize; //	for(int y = -1; y <= 1; ++y) { //	for(int x = -1; x <= 1; ++x) { //	vec2 texelSize = 1.0 / vec2(2048.0,2048.0); //	float bias = -0.0001; //	float shadow = 0.0; //	// shadow ////attenuation=floor(attenuation*ns)/ns; ////intensity=floor(intensity*ns)/ns; //	float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0); //	float epsilon = light.cutOff - light.outerCutOff; //	float theta = dot(lightDir, normalize(-light.direction)); //	// Spotlight intensity //	float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance)); //	float distance = length(cam_w - pos_w); //	// attenuation //	vec3 specular = light.specular * (spec * specular_w); ////spec=floor(spec*ns)/ns; //	float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess_w); //	vec3 halfwayDir = normalize(lightDir + viewDir); //	vec3 viewDir = normalize(cam_w - pos_w); //	// Specular //	vec3 diffuse = light.diffuse * (diff * diffuse_w); ////diff=floor(diff*ns)/ns; ////float ns=4.0; //	float diff = max(dot(norm, lightDir), 0.0); //	vec3 lightDir = normalize(light.position - pos_w); //	vec3 norm = normalize(Norm_w); //	// diffuse //	vec3 ambient = light.ambient * ambient_w; //	// ambient //vec3 CalcLight(spotLight light, vec3 ambient_w, vec3 diffuse_w, vec3 specular_w, float shininess_w, vec3 Norm_w, vec3 pos_w, vec3 cam_w){  uniform spotLight _light[MAX_LIGHTS]; const int MAX_LIGHTS = 2; }; 	vec3 specular; 	vec3 diffuse; 	vec3 ambient;  	float quadratic; 	float linear; 	float constant;  	float outerCutOff; 	float cutOff; 	vec3 direction; 	vec3 position; struct spotLight { //uniform sampler2D shadowMap;  //uniform float time; uniform vec3 CameraPosition_worldspace; varying float data; //varying vec4 ShadowCoord; //varying vec3 Normal_worldspace; varying vec3 Position_worldspace; // input #extension GL_OES_standard_derivatives : enable precision mediump float; ad  	  m            ˇ  ø  Ω  Ø  è  d  Ú  Ã  ¨  å  k  S  ˘  ü  á  p  n  m  a  _    Â  ô  ^  H  D  $  Î  ﬁ  ç  t  s  c  S  C  3  ﬂ
+  …
+  »
+  ´
+  é
+  q
+  T
+  S
+  +
+  
+  
+  ·	  ¿	  ü	  o	  ?	  >	  	  ˛  ˝  €  º  ù  ú  k  N  M      Ì  ≈  ~  ;  :    Ê  Ω  ñ  Ñ  t  s  8    Á  √  ü  {  W  V  5       ﬂ  Œ  Õ  ß  Ä  p  o  C      ˛  ˝  ˚  …  «  ¨  ´  ©  É  l  k  i  :  $  #  !  Ú  ‹  €  ⁄                                                                                                                                                                                                                                                } 				dot(p2,x2), do  } 				dot(p2,x2), dot(p3,x3) ) );   return 42     } 				dot(p2,x2), do  } 				dot(p2,x2), dot(p3,x3) ) );   return 42     } 				dot(p2,x2), dot  } 				dot(p2,x2), dot(p3,x3) ) );        } 				dot(p2,x2), dot(p3,    } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0      } 				dot(p2,x2), d  } 	  } 				dot(p2,x2), dot(p3,x3) ) );   retur  } 				dot(p2,x2), dot(p3,x3) ) );   return   } 				dot(p2,x  } 				dot(p2,x2), dot(p3,x3) ) );   r  } 				dot(p2,x2), dot(p3,x3) ) );      } 				dot(p2,x2  } 				dot(p2,x2), dot(p3,x3) )   } 				dot(p2,x2),   } 				dot(p2,x2), dot(p3,x3) )   } 				dot(p2,x2), dot(p3,x3) )    } 				dot(p2,x2), dot(p3,x3) ) );   } 				dot(p2,x2), dot(p3,x3) ) );   } 				dot(p2,x2), dot(p3,x3) ) );   } 				dot(p2,x2), dot(p3,x3) ) );   } 				dot(p2,x2), dot(p3,x3  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 *   } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot( m*   } 				dot(p2,x  } 				dot(p2,x2)  } 				dot(p2,x2), dot(p3,x3) ) );   r  } 				dot(p2,x2), dot(p3,x3) ) );   ret  } 				dot(p2,x2), dot(p3,x3) ) );   retu  } 				dot(p2,x2), dot(p3,x3) ) );   retu   } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot( m*m, vec4(  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot( m*m, vec4( dot  } 				dot(p2,x2), dot(p3,x3) ) );   re  } 				dot(p2,x2), dot(p3,x3) )    } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot( m*m,    } 				dot(p2,x2), dot(p3,x3  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0   } 				dot(p2,x2), dot(p3,x3)   } 				dot(p2,x2), dot(p3,x3)   } 				dot(p2,x2), dot(p3,x3) ) )   } 				dot(p2,x2), dot(p3,x3) )  } 				dot(p2,x2), dot(p3,x3) )   } 				dot(p2,x2), dot(p3,x3) ) );   return 42.  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.  } 				dot(p2,x2), dot(p3,x3) )   } 				dot(p2,x2), dot(p3,x3) )   } 				dot(p2,x2), dot(p3,x3) )    } 				dot(p2,x2), dot(p3,x3) ) );   re  } 				dot(p2,x2), dot(p3,x3) ) );   re   } 				dot(p2,x2), dot(p3,x3  } 				dot(p2,x2), dot(p3,x3  } 				dot(p2,x2), dot(p3,x3  } 				dot(p2,x2), dot(p3,x3   } 				dot(p2,x2), do  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(  } 				dot(p2,x  } 				dot(p2,x  } 				dot(p2,x  } 				dot(p2,x   } 				dot(p2,x2), dot(p  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot( m*m, vec4( dot(p0,x0), d  } 				dot(p  } 				dot(p2,x2), dot(p3,x3) ) );   return 42.0 * dot(   } 				dot(p2,x2), dot(p3,x3) )  }  } 	gl_FragColor.a = 1 } 	gl_FragColor.a = 1.0; 	gl_FragColor.rgb = l1; 	     l1+ } 	gl_FragColor.a = 1.0; 	gl_FragColor. } 	gl_FragColor.a = 1.0; 	gl_FragCo } 	gl_FragColor.a = 1.0; 	gl_FragC } 	gl_FragColor.a = 1.0; 	gl_FragColor.rgb = l1; 	     l1+=CalcLight_passive(_light[1] } } 	gl_FragC } 	gl_FragColor.a = 1.0; 	gl_FragColor.rgb = l1; 	     l1+=CalcLight_passive(_light[1], ambient, diffuse, specular,shininess, Nt, Pt, Ct); 	vec3 l1 =CalcLight_passive(_light[0], ambient, diffuse, specular,shininess, Nt, Pt, Ct); 	float shininess = 1.0; 	vec3 specular = vec3(data+0.5); 	vec3 diffuse = vec3(data+0.5); 	vec3 ambient = vec3(data+0.5); 	vec3 Ct = CameraPosition_worldspace; 	vec3 Nt = normalize(-1.0*cross(vec3(dFdy(Pt.x),dFdy(Pt.y),dFdy(Pt.z)), vec3(dFdx(Pt.x),dFdx(Pt.y),dFdx(Pt.z)))); //	vec3 Nt = normalize(Normal_worldspace); 	vec3 Pt = Position_worldspace; void main() { } 	return (ambient + (diffuse + specular)*intensity)*attenuation;  
